@@ -1,1 +1,133 @@
-train flow simulation with OpenFOAM input with Graph Neural Network
+# GNN-BFS: Graph Neural Network for OpenFOAM Flow Simulation
+
+This project implements a Graph Neural Network (GNN) for training on OpenFOAM flow simulation data, specifically for Backward-Facing Step (BFS) flow cases.
+
+## Overview
+
+The project provides:
+- **OpenFOAM Data Parser**: Extracts mesh connectivity and field data from OpenFOAM case directories
+- **Graph Construction**: Builds PyTorch Geometric graphs from mesh topology
+- **GNN Models**: 
+  - Static GNN for single time-step prediction
+  - Temporal GNN with LSTM for sequence-to-sequence prediction
+- **Training Pipeline**: Complete training script with validation and checkpointing
+- **Inference Script**: Make predictions with trained models
+
+## Installation
+
+1. Create a virtual environment (recommended):
+```bash
+python3 -m venv venv
+source venv/bin/activate  # On macOS/Linux
+# or
+venv\Scripts\activate  # On Windows
+```
+
+2. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+Note: If you encounter "externally-managed-environment" error, use a virtual environment as shown above. If `pip` is not found, use `pip3` or `python3 -m pip`.
+
+2. Ensure you have OpenFOAM data in the `BFS-OpenFOAM-data/` directory with the following structure:
+```
+BFS-OpenFOAM-data/
+├── constant/
+│   └── polyMesh/
+│       ├── points
+│       ├── owner
+│       ├── neighbour
+│       └── ...
+├── 0/
+├── 0.001/
+├── 0.002/
+└── ...
+```
+
+## Usage
+
+### Training
+
+**Important:** Activate the virtual environment first:
+```bash
+source venv/bin/activate  # On macOS/Linux
+```
+
+Train a static GNN model:
+```bash
+python train.py --data_dir BFS-OpenFOAM-data --epochs 50 --batch_size 4 --model_type static
+```
+
+Train a temporal GNN model (recommended for time-series prediction):
+```bash
+python train.py --data_dir BFS-OpenFOAM-data --epochs 50 --batch_size 4 --model_type temporal --sequence_length 3
+```
+
+Key arguments:
+- `--data_dir`: Path to OpenFOAM data directory
+- `--epochs`: Number of training epochs
+- `--batch_size`: Batch size for training
+- `--model_type`: `static` or `temporal`
+- `--sequence_length`: Input sequence length for temporal model
+- `--hidden_dim`: Hidden dimension (default: 64)
+- `--num_layers`: Number of GNN layers (default: 3)
+- `--layer_type`: GNN layer type: `GCN`, `GAT`, or `GIN` (default: GCN)
+- `--lr`: Learning rate (default: 0.001)
+- `--train_split`: Train/validation split ratio (default: 0.8)
+
+### Prediction
+
+**Important:** Activate the virtual environment first:
+```bash
+source venv/bin/activate  # On macOS/Linux
+```
+
+Make predictions with a trained model:
+```bash
+python predict.py --checkpoint checkpoints/best_model.pt --data_dir BFS-OpenFOAM-data --visualize
+```
+
+Arguments:
+- `--checkpoint`: Path to model checkpoint
+- `--data_dir`: Path to OpenFOAM data directory
+- `--time_dir`: Specific time directory to predict (optional)
+- `--output_dir`: Directory to save predictions (default: predictions)
+- `--visualize`: Create visualization plots
+
+## Model Architecture
+
+### Static FlowGNN
+- Input: Node features (velocity, pressure, etc.)
+- Architecture: Multi-layer GCN/GAT/GIN with residual connections
+- Output: Predicted field values at next time step
+
+### Temporal FlowGNN
+- Input: Sequence of node features
+- Architecture: Spatial GNN + Temporal LSTM
+- Output: Predicted field sequence
+
+## Data Format
+
+The parser expects OpenFOAM field files with:
+- Vector fields (e.g., `U`): 3D velocity vectors
+- Scalar fields (e.g., `p`): Pressure values
+
+Each time directory should contain field files with `internalField` data.
+
+## Output
+
+Training produces:
+- Model checkpoints in `checkpoints/` directory
+- Training curves plot (`training_curves.png`)
+
+Prediction produces:
+- NumPy arrays with predictions and ground truth
+- Visualization plots (if `--visualize` is used)
+
+## Notes
+
+- The mesh connectivity is built from `owner` and `neighbour` arrays
+- Only internal faces are used for graph edges (bidirectional)
+- Node features include velocity (3D) and pressure (1D) by default
+- Additional fields can be added by modifying the `fields` parameter in `graph_constructor.py`
