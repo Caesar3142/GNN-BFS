@@ -132,46 +132,63 @@ def plot_contour_comparison(x, y, gt_values, pred_values, title_base, save_path=
     error = pred_values - gt_values
     zi_error = griddata((x, y), error, (xi_grid, yi_grid), method='linear', fill_value=np.nan)
     
-    # Determine common color scale
+    # Determine common color scale for both OpenFOAM and prediction
+    # Use the same vmin and vmax for both plots
     vmin = min(np.nanmin(zi_gt), np.nanmin(zi_pred))
     vmax = max(np.nanmax(zi_gt), np.nanmax(zi_pred))
     
+    # Create evenly spaced levels based on the common range
+    level_values = np.linspace(vmin, vmax, levels)
+    
     # Plot 1: OpenFOAM (Ground Truth)
-    contour1 = axes[0].contourf(xi_grid, yi_grid, zi_gt, levels=levels, 
-                                vmin=vmin, vmax=vmax, cmap='viridis', extend='both')
-    axes[0].contour(xi_grid, yi_grid, zi_gt, levels=levels, colors='black', 
+    contour1 = axes[0].contourf(xi_grid, yi_grid, zi_gt, levels=level_values, 
+                                vmin=vmin, vmax=vmax, cmap='viridis', extend='neither')
+    axes[0].contour(xi_grid, yi_grid, zi_gt, levels=level_values, colors='black', 
                    alpha=0.3, linewidths=0.5)
     axes[0].set_xlabel('X coordinate', fontsize=12)
     axes[0].set_ylabel('Y coordinate', fontsize=12)
     axes[0].set_title(f'OpenFOAM {title_base}', fontsize=14, fontweight='bold')
     axes[0].set_aspect('equal')
     axes[0].grid(True, alpha=0.3)
-    plt.colorbar(contour1, ax=axes[0], label=title_base)
+    cbar1 = plt.colorbar(contour1, ax=axes[0], label=title_base)
+    cbar1.set_ticks(np.linspace(vmin, vmax, 6))  # Set consistent tick marks
     
-    # Plot 2: Model Prediction
-    contour2 = axes[1].contourf(xi_grid, yi_grid, zi_pred, levels=levels,
-                               vmin=vmin, vmax=vmax, cmap='viridis', extend='both')
-    axes[1].contour(xi_grid, yi_grid, zi_pred, levels=levels, colors='black',
+    # Plot 2: Model Prediction - use same scale as OpenFOAM
+    contour2 = axes[1].contourf(xi_grid, yi_grid, zi_pred, levels=level_values,
+                               vmin=vmin, vmax=vmax, cmap='viridis', extend='neither')
+    axes[1].contour(xi_grid, yi_grid, zi_pred, levels=level_values, colors='black',
                    alpha=0.3, linewidths=0.5)
     axes[1].set_xlabel('X coordinate', fontsize=12)
     axes[1].set_ylabel('Y coordinate', fontsize=12)
     axes[1].set_title(f'Model Prediction {title_base}', fontsize=14, fontweight='bold')
     axes[1].set_aspect('equal')
     axes[1].grid(True, alpha=0.3)
-    plt.colorbar(contour2, ax=axes[1], label=title_base)
+    cbar2 = plt.colorbar(contour2, ax=axes[1], label=title_base)
+    cbar2.set_ticks(np.linspace(vmin, vmax, 6))  # Set same tick marks as OpenFOAM
     
     # Plot 3: Error
     error_max = max(abs(np.nanmin(zi_error)), abs(np.nanmax(zi_error)))
-    contour3 = axes[2].contourf(xi_grid, yi_grid, zi_error, levels=levels,
-                                vmin=-error_max, vmax=error_max, cmap='RdBu_r', extend='both')
-    axes[2].contour(xi_grid, yi_grid, zi_error, levels=levels, colors='black',
+    error_levels = np.linspace(-error_max, error_max, levels)
+    contour3 = axes[2].contourf(xi_grid, yi_grid, zi_error, levels=error_levels,
+                                vmin=-error_max, vmax=error_max, cmap='RdBu_r', extend='neither')
+    axes[2].contour(xi_grid, yi_grid, zi_error, levels=error_levels, colors='black',
                    alpha=0.3, linewidths=0.5)
     axes[2].set_xlabel('X coordinate', fontsize=12)
     axes[2].set_ylabel('Y coordinate', fontsize=12)
     axes[2].set_title(f'Error (Predicted - OpenFOAM)', fontsize=14, fontweight='bold')
     axes[2].set_aspect('equal')
     axes[2].grid(True, alpha=0.3)
-    plt.colorbar(contour3, ax=axes[2], label='Error')
+    
+    # Determine error unit based on field type
+    if 'Pressure' in title_base or 'pressure' in title_base.lower():
+        error_unit = ' (m²/s²)'
+    elif 'Velocity' in title_base or 'velocity' in title_base.lower():
+        error_unit = ' (m/s)'
+    else:
+        error_unit = ''
+    
+    cbar3 = plt.colorbar(contour3, ax=axes[2], label=f'Error{error_unit}')
+    cbar3.set_ticks(np.linspace(-error_max, error_max, 6))
     
     plt.tight_layout()
     

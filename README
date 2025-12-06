@@ -2,6 +2,8 @@
 
 This project implements a Graph Neural Network (GNN) for training on OpenFOAM flow simulation data, specifically for Backward-Facing Step (BFS) flow cases.
 
+**Latest Update**: Model architecture has been improved with residual connections to ensure predictions maintain correct scale. If you have an old checkpoint, please retrain the model (see [IMPORTANT_RETRAIN.md](IMPORTANT_RETRAIN.md)).
+
 ## Overview
 
 The project provides:
@@ -62,6 +64,19 @@ python train.py --data_dir BFS-OpenFOAM-data --epochs 50 --batch_size 4 --model_
 Train a temporal GNN model (recommended for time-series prediction):
 ```bash
 python train.py --data_dir BFS-OpenFOAM-data --epochs 50 --batch_size 4 --model_type temporal --sequence_length 3
+```
+
+**Recommended configuration for better results:**
+```bash
+python train.py \
+    --data_dir BFS-OpenFOAM-data \
+    --epochs 100 \
+    --batch_size 4 \
+    --model_type temporal \
+    --sequence_length 5 \
+    --hidden_dim 128 \
+    --num_layers 4 \
+    --lr 0.0005
 ```
 
 Key arguments:
@@ -159,11 +174,21 @@ Options:
 - Input: Node features (velocity, pressure, etc.)
 - Architecture: Multi-layer GCN/GAT/GIN with residual connections
 - Output: Predicted field values at next time step
+- **Key Feature**: Uses residual connections to predict increments (delta) from input, preserving scale
 
 ### Temporal FlowGNN
 - Input: Sequence of node features
 - Architecture: Spatial GNN + Temporal LSTM
 - Output: Predicted field sequence
+- **Key Feature**: Predicts increments (delta) from last input state: `output = input + delta`
+- This ensures predictions maintain the correct scale (pressure ~15-375, velocity ~0-17)
+
+### Architecture Details
+
+Both models use:
+- **Residual connections**: Predict changes rather than absolute values
+- **Scale preservation**: Outputs maintain input scale automatically
+- **Proper initialization**: Output layers initialized to predict small increments initially
 
 ## Data Format
 
@@ -183,11 +208,21 @@ Prediction produces:
 - NumPy arrays with predictions and ground truth
 - Visualization plots (if `--visualize` is used)
 
-## Notes
+## Important Notes
+
+### Model Architecture Update
+
+⚠️ **If you have an old checkpoint**, you need to retrain the model because the architecture was updated to fix scaling issues. The model now uses residual connections to predict increments, ensuring predictions maintain the correct scale.
+
+See [IMPORTANT_RETRAIN.md](IMPORTANT_RETRAIN.md) for details.
+
+### Technical Details
 
 - The mesh connectivity is built from `owner` and `neighbour` arrays
 - Only internal faces are used for graph edges (bidirectional)
 - Node features include velocity (3D) and pressure (1D) by default
+- Cell centers are computed from mesh geometry (faces and points)
+- Model predicts the next time step (t+1) from input sequence ending at time t
 
 ## Training Guide
 
