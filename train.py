@@ -16,6 +16,18 @@ from openfoam_parser import OpenFOAMParser
 from graph_constructor import GraphConstructor
 from gnn_model import FlowGNN, TemporalFlowGNN
 
+# Import enhanced models if available
+try:
+    from gnn_model_enhanced import EnhancedFlowGNN, EnhancedTemporalFlowGNN
+    from dataset_enhanced import EnhancedFlowDataset, enhanced_collate_fn
+    ENHANCED_AVAILABLE = True
+except ImportError:
+    ENHANCED_AVAILABLE = False
+    EnhancedFlowGNN = None
+    EnhancedTemporalFlowGNN = None
+    EnhancedFlowDataset = None
+    enhanced_collate_fn = None
+
 
 class FlowDataset(Dataset):
     """Dataset for flow field graphs."""
@@ -64,34 +76,46 @@ def collate_fn(batch):
     return batched_inputs, batched_targets
 
 
-def train_epoch(model, dataloader, optimizer, criterion, device, use_temporal=False):
+def train_epoch(model, dataloader, optimizer, criterion, device, use_temporal=False, use_flattened=False):
     """Train for one epoch."""
     model.train()
     total_loss = 0.0
     num_batches = 0
     
-    for input_sequences, targets in tqdm(dataloader, desc="Training"):
-        # Move to device
-        targets = targets.to(device)
-        
-        # Prepare inputs
-        if use_temporal:
-            # Stack input sequence: [seq_len, num_nodes, features]
-            x_seq = torch.stack([g.x for g in input_sequences], dim=0)
-            x_seq = x_seq.to(device)
-            edge_index = input_sequences[0].edge_index.to(device)
+    for batch_data in tqdm(dataloader, desc="Training"):
+        # Handle different batch formats
+        if use_flattened:
+            # Enhanced dataset: (batched_input_graph, batched_target_graph)
+            input_graph, targets = batch_data
+            input_graph = input_graph.to(device)
+            targets = targets.to(device)
             
-            # Forward pass
-            outputs = model(x_seq, edge_index)
-            # Take last time step output
-            pred = outputs[-1]
-        else:
-            # Use only last input graph
-            input_graph = input_sequences[-1].to(device)
+            # Forward pass with flattened input
             pred = model(input_graph.x, input_graph.edge_index)
-        
-        # Compute loss
-        loss = criterion(pred, targets.x)
+            loss = criterion(pred, targets.x)
+        else:
+            # Standard dataset: (input_sequences, targets)
+            input_sequences, targets = batch_data
+            targets = targets.to(device)
+            
+            # Prepare inputs
+            if use_temporal:
+                # Stack input sequence: [seq_len, num_nodes, features]
+                x_seq = torch.stack([g.x for g in input_sequences], dim=0)
+                x_seq = x_seq.to(device)
+                edge_index = input_sequences[0].edge_index.to(device)
+                
+                # Forward pass
+                outputs = model(x_seq, edge_index)
+                # Take last time step output
+                pred = outputs[-1]
+            else:
+                # Use only last input graph
+                input_graph = input_sequences[-1].to(device)
+                pred = model(input_graph.x, input_graph.edge_index)
+            
+            # Compute loss
+            loss = criterion(pred, targets.x)
         
         # Backward pass
         optimizer.zero_grad()
@@ -105,27 +129,39 @@ def train_epoch(model, dataloader, optimizer, criterion, device, use_temporal=Fa
     return total_loss / num_batches
 
 
-def validate(model, dataloader, criterion, device, use_temporal=False):
+def validate(model, dataloader, criterion, device, use_temporal=False, use_flattened=False):
     """Validate model."""
     model.eval()
     total_loss = 0.0
     num_batches = 0
     
     with torch.no_grad():
-        for input_sequences, targets in tqdm(dataloader, desc="Validating"):
-            targets = targets.to(device)
-            
-            if use_temporal:
-                x_seq = torch.stack([g.x for g in input_sequences], dim=0)
-                x_seq = x_seq.to(device)
-                edge_index = input_sequences[0].edge_index.to(device)
-                outputs = model(x_seq, edge_index)
-                pred = outputs[-1]
-            else:
-                input_graph = input_sequences[-1].to(device)
+        for batch_data in tqdm(dataloader, desc="Validating"):
+            if use_flattened:
+                # Enhanced dataset format
+                input_graph, targets = batch_data
+                input_graph = input_graph.to(device)
+                targets = targets.to(device)
+                
                 pred = model(input_graph.x, input_graph.edge_index)
+                loss = criterion(pred, targets.x)
+            else:
+                # Standard dataset format
+                input_sequences, targets = batch_data
+                targets = targets.to(device)
+                
+                if use_temporal:
+                    x_seq = torch.stack([g.x for g in input_sequences], dim=0)
+                    x_seq = x_seq.to(device)
+                    edge_index = input_sequences[0].edge_index.to(device)
+                    outputs = model(x_seq, edge_index)
+                    pred = outputs[-1]
+                else:
+                    input_graph = input_sequences[-1].to(device)
+                    pred = model(input_graph.x, input_graph.edge_index)
+                
+                loss = criterion(pred, targets.x)
             
-            loss = criterion(pred, targets.x)
             total_loss += loss.item()
             num_batches += 1
     
@@ -154,12 +190,22 @@ def main():
                        choices=['static', 'temporal'],
                        help='Model type: static or temporal')
     parser.add_argument('--layer_type', type=str, default='GCN',
-                       choices=['GCN', 'GAT', 'GIN'],
-                       help='GNN layer type')
+                       choices=['GCN', 'GAT', 'GIN', 'attention'],
+                       help='GNN layer type (attention for custom attention mechanism)')
     parser.add_argument('--save_dir', type=str, default='checkpoints',
                        help='Directory to save checkpoints')
     parser.add_argument('--train_split', type=float, default=0.8,
                        help='Train/validation split ratio')
+    parser.add_argument('--adaptive_sampling', action='store_true',
+                       help='Use adaptive spatial sampling for graph edges')
+    parser.add_argument('--sampling_radius', type=float, default=None,
+                       help='Radius for adaptive sampling (default: auto-computed)')
+    parser.add_argument('--include_coordinates', action='store_true',
+                       help='Embed cell center coordinates in node features')
+    parser.add_argument('--use_enhanced_model', action='store_true',
+                       help='Use enhanced model with explicit neighbor aggregation')
+    parser.add_argument('--use_flattened_input', action='store_true',
+                       help='Use flattened sequence input (cylinder project method)')
     
     args = parser.parse_args()
     
@@ -181,15 +227,44 @@ def main():
     
     # Build graphs
     print("Building graphs...")
-    graphs = graph_constructor.build_temporal_graphs(time_dirs)
+    graphs = graph_constructor.build_temporal_graphs(
+        time_dirs,
+        adaptive_sampling=args.adaptive_sampling,
+        radius=args.sampling_radius
+    )
     print(f"Built {len(graphs)} graphs")
+    
+    # If using enhanced model, rebuild with coordinate embedding
+    if args.use_enhanced_model or args.use_flattened_input:
+        print("Rebuilding graphs with coordinate embedding...")
+        graphs = []
+        for time_dir in time_dirs:
+            try:
+                graph = graph_constructor.build_graph(
+                    time_dir,
+                    adaptive_sampling=args.adaptive_sampling,
+                    radius=args.sampling_radius,
+                    include_coordinates=args.include_coordinates
+                )
+                graphs.append(graph)
+            except Exception as e:
+                print(f"Warning: Could not build graph for {time_dir}: {e}")
+                continue
+        print(f"Rebuilt {len(graphs)} graphs with coordinate embedding")
     
     if len(graphs) == 0:
         raise ValueError("No graphs were built. Check data directory and field names.")
     
     # Get feature dimensions
-    input_dim = graphs[0].x.shape[1]
-    output_dim = input_dim  # Predict same fields
+    if args.use_flattened_input and ENHANCED_AVAILABLE:
+        # For flattened input, input_dim = fields * sequence_length
+        fields_per_timestep = graphs[0].x.shape[1]  # Fields at one time step
+        input_dim = fields_per_timestep * (args.sequence_length if args.model_type == 'temporal' else 6)
+        output_dim = fields_per_timestep  # Output is single time step
+        print(f"Flattened input: {fields_per_timestep} fields/step × {args.sequence_length} steps = {input_dim} input dim")
+    else:
+        input_dim = graphs[0].x.shape[1]
+        output_dim = input_dim  # Predict same fields
     
     # Split data
     split_idx = int(len(graphs) * args.train_split)
@@ -199,33 +274,86 @@ def main():
     print(f"Train graphs: {len(train_graphs)}, Val graphs: {len(val_graphs)}")
     
     # Create datasets
-    train_dataset = FlowDataset(
-        train_graphs,
-        sequence_length=args.sequence_length if args.model_type == 'temporal' else 1,
-        predict_ahead=args.predict_ahead
-    )
-    val_dataset = FlowDataset(
-        val_graphs,
-        sequence_length=args.sequence_length if args.model_type == 'temporal' else 1,
-        predict_ahead=args.predict_ahead
-    )
+    if args.use_flattened_input and ENHANCED_AVAILABLE:
+        # Use enhanced dataset with flattened sequence input
+        train_dataset = EnhancedFlowDataset(
+            train_graphs,
+            sequence_length=args.sequence_length if args.model_type == 'temporal' else 6,
+            predict_ahead=args.predict_ahead
+        )
+        val_dataset = EnhancedFlowDataset(
+            val_graphs,
+            sequence_length=args.sequence_length if args.model_type == 'temporal' else 6,
+            predict_ahead=args.predict_ahead
+        )
+        collate_fn_to_use = enhanced_collate_fn
+        print("Using enhanced dataset with flattened sequence input")
+    else:
+        # Use standard dataset
+        train_dataset = FlowDataset(
+            train_graphs,
+            sequence_length=args.sequence_length if args.model_type == 'temporal' else 1,
+            predict_ahead=args.predict_ahead
+        )
+        val_dataset = FlowDataset(
+            val_graphs,
+            sequence_length=args.sequence_length if args.model_type == 'temporal' else 1,
+            predict_ahead=args.predict_ahead
+        )
+        collate_fn_to_use = collate_fn
     
     # Create dataloaders
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        collate_fn=collate_fn
+        collate_fn=collate_fn_to_use
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        collate_fn=collate_fn
+        collate_fn=collate_fn_to_use
     )
     
     # Create model
-    if args.model_type == 'temporal':
+    if args.use_enhanced_model and ENHANCED_AVAILABLE:
+        if args.model_type == 'temporal':
+            if args.use_flattened_input:
+                # Enhanced model with flattened input
+                fields_per_timestep = graphs[0].x.shape[1]
+                model = EnhancedTemporalFlowGNN(
+                    fields_per_timestep=fields_per_timestep,
+                    sequence_length=args.sequence_length if args.model_type == 'temporal' else 6,
+                    hidden_dim=args.hidden_dim,
+                    num_layers=args.num_layers,
+                    dropout=0.1,
+                    use_explicit_aggregation=True
+                )
+            else:
+                # Enhanced model with sequence input
+                model = EnhancedTemporalFlowGNN(
+                    fields_per_timestep=input_dim,
+                    sequence_length=args.sequence_length,
+                    hidden_dim=args.hidden_dim,
+                    num_layers=args.num_layers,
+                    dropout=0.1,
+                    use_explicit_aggregation=True
+                )
+        else:
+            # Use attention layers if specified, otherwise use standard layers
+            layer_type = 'attention' if args.use_enhanced_model else args.layer_type
+            model = EnhancedFlowGNN(
+                input_dim=input_dim,
+                hidden_dim=args.hidden_dim,
+                output_dim=output_dim,
+                num_layers=args.num_layers,
+                dropout=0.1,
+                layer_type=layer_type,
+                use_explicit_aggregation=True
+            )
+        print("Using enhanced model with explicit neighbor aggregation")
+    elif args.model_type == 'temporal':
         model = TemporalFlowGNN(
             input_dim=input_dim,
             hidden_dim=args.hidden_dim,
@@ -265,14 +393,16 @@ def main():
         # Train
         train_loss = train_epoch(
             model, train_loader, optimizer, criterion, device,
-            use_temporal=(args.model_type == 'temporal')
+            use_temporal=(args.model_type == 'temporal'),
+            use_flattened=args.use_flattened_input
         )
         train_losses.append(train_loss)
         
         # Validate
         val_loss = validate(
             model, val_loader, criterion, device,
-            use_temporal=(args.model_type == 'temporal')
+            use_temporal=(args.model_type == 'temporal'),
+            use_flattened=args.use_flattened_input
         )
         val_losses.append(val_loss)
         

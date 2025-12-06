@@ -5,6 +5,8 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.interpolate import griddata
+from scipy.spatial import Delaunay
+from matplotlib.path import Path
 from pathlib import Path
 import argparse
 
@@ -114,8 +116,8 @@ def plot_contour_field(x, y, values, title, save_path=None, levels=20, cmap='vir
 
 
 def plot_contour_comparison(x, y, gt_values, pred_values, title_base, save_path=None, levels=20):
-    """Plot side-by-side comparison of ground truth and prediction contours."""
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    """Plot vertically stacked comparison of ground truth and prediction contours."""
+    fig, axes = plt.subplots(3, 1, figsize=(10, 18))
     
     # Create a regular grid for contour plotting
     xi = np.linspace(x.min(), x.max(), 200)
@@ -132,6 +134,35 @@ def plot_contour_comparison(x, y, gt_values, pred_values, title_base, save_path=
     error = pred_values - gt_values
     zi_error = griddata((x, y), error, (xi_grid, yi_grid), method='linear', fill_value=np.nan)
     
+    # Create mask to preserve domain boundaries (especially square corners)
+    # Use Delaunay triangulation to identify valid interpolation region
+    try:
+        from scipy.spatial import Delaunay
+        points_2d = np.column_stack([x, y])
+        tri = Delaunay(points_2d)
+        
+        # Check which grid points are inside the triangulation
+        grid_points = np.column_stack([xi_grid.ravel(), yi_grid.ravel()])
+        mask = tri.find_simplex(grid_points) >= 0
+        mask = mask.reshape(xi_grid.shape)
+        
+        # Apply mask to all interpolated fields
+        zi_gt[~mask] = np.nan
+        zi_pred[~mask] = np.nan
+        zi_error[~mask] = np.nan
+    except ImportError:
+        # Fallback: use convex hull if Delaunay not available
+        try:
+            from scipy.spatial import ConvexHull
+            hull = ConvexHull(points_2d)
+            hull_path = Path(points_2d[hull.vertices])
+            mask = hull_path.contains_points(grid_points).reshape(xi_grid.shape)
+            zi_gt[~mask] = np.nan
+            zi_pred[~mask] = np.nan
+            zi_error[~mask] = np.nan
+        except:
+            pass
+    
     # Determine common color scale for both OpenFOAM and prediction
     # Use the same vmin and vmax for both plots
     vmin = min(np.nanmin(zi_gt), np.nanmin(zi_pred))
@@ -140,7 +171,7 @@ def plot_contour_comparison(x, y, gt_values, pred_values, title_base, save_path=
     # Create evenly spaced levels based on the common range
     level_values = np.linspace(vmin, vmax, levels)
     
-    # Plot 1: OpenFOAM (Ground Truth)
+    # Plot 1: OpenFOAM (Ground Truth) - Top
     contour1 = axes[0].contourf(xi_grid, yi_grid, zi_gt, levels=level_values, 
                                 vmin=vmin, vmax=vmax, cmap='viridis', extend='neither')
     axes[0].contour(xi_grid, yi_grid, zi_gt, levels=level_values, colors='black', 
@@ -150,10 +181,10 @@ def plot_contour_comparison(x, y, gt_values, pred_values, title_base, save_path=
     axes[0].set_title(f'OpenFOAM {title_base}', fontsize=14, fontweight='bold')
     axes[0].set_aspect('equal')
     axes[0].grid(True, alpha=0.3)
-    cbar1 = plt.colorbar(contour1, ax=axes[0], label=title_base)
+    cbar1 = plt.colorbar(contour1, ax=axes[0], label=title_base, fraction=0.046, pad=0.04)
     cbar1.set_ticks(np.linspace(vmin, vmax, 6))  # Set consistent tick marks
     
-    # Plot 2: Model Prediction - use same scale as OpenFOAM
+    # Plot 2: Model Prediction - Middle
     contour2 = axes[1].contourf(xi_grid, yi_grid, zi_pred, levels=level_values,
                                vmin=vmin, vmax=vmax, cmap='viridis', extend='neither')
     axes[1].contour(xi_grid, yi_grid, zi_pred, levels=level_values, colors='black',
@@ -163,10 +194,10 @@ def plot_contour_comparison(x, y, gt_values, pred_values, title_base, save_path=
     axes[1].set_title(f'Model Prediction {title_base}', fontsize=14, fontweight='bold')
     axes[1].set_aspect('equal')
     axes[1].grid(True, alpha=0.3)
-    cbar2 = plt.colorbar(contour2, ax=axes[1], label=title_base)
+    cbar2 = plt.colorbar(contour2, ax=axes[1], label=title_base, fraction=0.046, pad=0.04)
     cbar2.set_ticks(np.linspace(vmin, vmax, 6))  # Set same tick marks as OpenFOAM
     
-    # Plot 3: Error
+    # Plot 3: Error - Bottom
     error_max = max(abs(np.nanmin(zi_error)), abs(np.nanmax(zi_error)))
     error_levels = np.linspace(-error_max, error_max, levels)
     contour3 = axes[2].contourf(xi_grid, yi_grid, zi_error, levels=error_levels,
@@ -187,7 +218,7 @@ def plot_contour_comparison(x, y, gt_values, pred_values, title_base, save_path=
     else:
         error_unit = ''
     
-    cbar3 = plt.colorbar(contour3, ax=axes[2], label=f'Error{error_unit}')
+    cbar3 = plt.colorbar(contour3, ax=axes[2], label=f'Error{error_unit}', fraction=0.046, pad=0.04)
     cbar3.set_ticks(np.linspace(-error_max, error_max, 6))
     
     plt.tight_layout()

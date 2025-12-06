@@ -84,12 +84,17 @@ Key arguments:
 - `--epochs`: Number of training epochs
 - `--batch_size`: Batch size for training
 - `--model_type`: `static` or `temporal`
-- `--sequence_length`: Input sequence length for temporal model
+- `--sequence_length`: Input sequence length for temporal model (default: 3, use 6 for enhanced model)
 - `--hidden_dim`: Hidden dimension (default: 64)
 - `--num_layers`: Number of GNN layers (default: 3)
-- `--layer_type`: GNN layer type: `GCN`, `GAT`, or `GIN` (default: GCN)
+- `--layer_type`: GNN layer type: `GCN`, `GAT`, `GIN`, or `attention` (default: GCN)
 - `--lr`: Learning rate (default: 0.001)
 - `--train_split`: Train/validation split ratio (default: 0.8)
+- `--adaptive_sampling`: Use adaptive spatial sampling for graph edges (improves gradient capture)
+- `--sampling_radius`: Radius for adaptive sampling (default: auto-computed)
+- `--include_coordinates`: Embed cell center coordinates in node features
+- `--use_enhanced_model`: Use enhanced model with custom attention architecture
+- `--use_flattened_input`: Use flattened sequence input (cylinder project method)
 
 ### Prediction
 
@@ -121,9 +126,11 @@ python plot_contours.py --checkpoint checkpoints/best_model.pt --data_dir BFS-Op
 ```
 
 This creates:
-- **Pressure contours**: Side-by-side comparison of OpenFOAM pressure, model prediction, and error
-- **Velocity contours**: Side-by-side comparison of OpenFOAM velocity magnitude, model prediction, and error
+- **Pressure contours**: Vertically stacked comparison of OpenFOAM pressure, model prediction, and error
+- **Velocity contours**: Vertically stacked comparison of OpenFOAM velocity magnitude, model prediction, and error
 - All plots show spatial distribution in x-y coordinates with contour lines
+- **Domain masking**: Uses Delaunay triangulation to preserve sharp boundaries and square corners
+- **Same colorbar scale**: OpenFOAM and prediction use identical scales for direct comparison
 
 Options:
 - `--time_dir`: Specific time directory to plot (default: validation time step)
@@ -190,6 +197,55 @@ Both models use:
 - **Scale preservation**: Outputs maintain input scale automatically
 - **Proper initialization**: Output layers initialized to predict small increments initially
 
+### Adaptive Spatial Sampling (Advanced)
+
+The graph construction supports **adaptive spatial sampling** inspired by multi-scale gradient aggregation methods:
+
+- **Formula**: `ne[i] = {j | (x_j - x_i)² + (y_j - y_i)² < r²}`
+- **Purpose**: Captures multi-scale gradient information, especially in regions with large gradient changes (near walls, obstacles)
+- **Benefits**: 
+  - Prevents jitter in flow fields with large gradient changes
+  - Aggregates information from many neighbor nodes in high-gradient regions
+  - Better perception of drastic gradient changes
+
+**Usage:**
+```bash
+python train.py --data_dir BFS-OpenFOAM-data --epochs 50 --adaptive_sampling
+```
+
+Or with custom radius:
+```bash
+python train.py --data_dir BFS-OpenFOAM-data --epochs 50 --adaptive_sampling --sampling_radius 0.002
+```
+
+### Enhanced Model with Custom Attention Architecture
+
+The project includes an **enhanced model** based on cylinder project methodology with custom attention mechanisms:
+
+- **Single-headed attention**: Aggregated query from neighbors, key from current node
+- **Multi-headed attention**: 4 heads with K and Q dimension = 1
+- **Residual connections**: Between attention layers and every 2 layers
+- **Flattened sequence input**: `x_i = [u_i[t1:t6], v_i[t1:t6], p_i[t1:t6], ...]`
+- **Explicit neighbor aggregation**: `sum(x_j for j in neighbors[i])`
+
+**Usage:**
+```bash
+python train.py \
+    --data_dir BFS-OpenFOAM-data \
+    --epochs 100 \
+    --model_type temporal \
+    --sequence_length 6 \
+    --use_enhanced_model \
+    --use_flattened_input \
+    --include_coordinates \
+    --adaptive_sampling \
+    --layer_type attention
+```
+
+See [ATTENTION_ARCHITECTURE.md](ATTENTION_ARCHITECTURE.md) for detailed architecture documentation.
+
+For detailed theoretical background and methodology, see [METHODOLOGY.md](METHODOLOGY.md).
+
 ## Data Format
 
 The parser expects OpenFOAM field files with:
@@ -218,11 +274,14 @@ See [IMPORTANT_RETRAIN.md](IMPORTANT_RETRAIN.md) for details.
 
 ### Technical Details
 
-- The mesh connectivity is built from `owner` and `neighbour` arrays
-- Only internal faces are used for graph edges (bidirectional)
-- Node features include velocity (3D) and pressure (1D) by default
-- Cell centers are computed from mesh geometry (faces and points)
-- Model predicts the next time step (t+1) from input sequence ending at time t
+- **Mesh connectivity**: Built from `owner` and `neighbour` arrays
+- **Graph edges**: Internal faces create bidirectional edges
+- **Node features**: Velocity (3D) and pressure (1D) by default
+- **Cell centers**: Computed accurately from mesh geometry (faces and points) using unique vertices
+- **Prediction**: Model predicts the next time step (t+1) from input sequence ending at time t
+- **Domain masking**: Contour plots use Delaunay triangulation to preserve sharp boundaries
+- **Coordinate embedding**: Optional cell center coordinates can be embedded in features
+- **Attention mechanism**: Custom attention with aggregated query from neighbors (see [ATTENTION_ARCHITECTURE.md](ATTENTION_ARCHITECTURE.md))
 
 ## Training Guide
 

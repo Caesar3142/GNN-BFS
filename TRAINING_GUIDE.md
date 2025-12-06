@@ -61,7 +61,8 @@ python train.py \
 
 - `--hidden_dim`: Hidden layer dimension (default: 64, try 128 or 256 for larger models)
 - `--num_layers`: Number of GNN layers (default: 3, try 4-6 for deeper models)
-- `--layer_type`: GNN layer type - `GCN`, `GAT`, or `GIN` (default: `GCN`)
+- `--layer_type`: GNN layer type - `GCN`, `GAT`, `GIN`, or `attention` (default: `GCN`)
+  - Use `attention` for custom attention architecture (requires `--use_enhanced_model`)
 
 ### Temporal Model Specific
 
@@ -71,6 +72,14 @@ python train.py \
 ### Data Splitting
 
 - `--train_split`: Train/validation split ratio (default: 0.8)
+
+### Advanced Options
+
+- `--adaptive_sampling`: Use adaptive spatial sampling for graph edges
+- `--sampling_radius`: Radius for adaptive sampling (default: auto-computed)
+- `--include_coordinates`: Embed cell center coordinates in node features
+- `--use_enhanced_model`: Use enhanced model with custom attention architecture
+- `--use_flattened_input`: Use flattened sequence input (cylinder project method)
 
 ### Output
 
@@ -304,6 +313,8 @@ This is normal - validation loss is typically higher. If the gap is very large:
 
 ## Full Command Reference
 
+### Standard Model
+
 ```bash
 python train.py \
     --data_dir BFS-OpenFOAM-data \
@@ -316,6 +327,28 @@ python train.py \
     --predict_ahead 1 \
     --model_type temporal \
     --layer_type GCN \
+    --train_split 0.8 \
+    --save_dir checkpoints
+```
+
+### Enhanced Model with Attention
+
+```bash
+python train.py \
+    --data_dir BFS-OpenFOAM-data \
+    --epochs 100 \
+    --batch_size 4 \
+    --lr 0.0005 \
+    --hidden_dim 128 \
+    --num_layers 4 \
+    --sequence_length 6 \
+    --predict_ahead 1 \
+    --model_type temporal \
+    --layer_type attention \
+    --use_enhanced_model \
+    --use_flattened_input \
+    --include_coordinates \
+    --adaptive_sampling \
     --train_split 0.8 \
     --save_dir checkpoints
 ```
