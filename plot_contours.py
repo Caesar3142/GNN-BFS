@@ -257,13 +257,29 @@ def main():
     print(f"Cell centers: x range [{x.min():.4f}, {x.max():.4f}], "
           f"y range [{y.min():.4f}, {y.max():.4f}]")
     
-    # Build graph for prediction
-    graph = graph_constructor.build_graph(plot_time)
+    # The model predicts the NEXT time step, so we need to:
+    # 1. Use input sequence up to plot_time
+    # 2. Predict the next time step (plot_time + 1)
+    # 3. Compare with ground truth at the next time step
     
-    # For temporal models, need input sequence
+    time_idx = time_dirs.index(plot_time)
+    predict_ahead = getattr(model_args, 'predict_ahead', 1)
+    
+    # Check if we have a next time step
+    if time_idx + predict_ahead >= len(time_dirs):
+        print(f"Warning: Cannot predict {predict_ahead} step(s) ahead from {plot_time}")
+        print(f"Using previous time step for comparison")
+        target_time_idx = time_idx - 1
+        target_time = time_dirs[target_time_idx]
+    else:
+        target_time_idx = time_idx + predict_ahead
+        target_time = time_dirs[target_time_idx]
+    
+    print(f"Input time: {plot_time}, Predicting time: {target_time}")
+    
+    # Build input sequence ending at plot_time
     if model_type == 'temporal':
         seq_len = getattr(model_args, 'sequence_length', 3)
-        time_idx = time_dirs.index(plot_time)
         
         if time_idx < seq_len:
             input_sequence = [graph_constructor.build_graph(time_dirs[i]) 
@@ -272,13 +288,18 @@ def main():
             input_sequence = [graph_constructor.build_graph(time_dirs[i]) 
                             for i in range(time_idx - seq_len + 1, time_idx + 1)]
         
-        prediction = predict(model, graph, device, use_temporal=True, 
+        # Use the last graph in sequence for edge_index
+        graph_for_edges = input_sequence[-1]
+        prediction = predict(model, graph_for_edges, device, use_temporal=True, 
                            input_sequence=input_sequence)
     else:
+        # For static model, use current time step to predict next
+        graph = graph_constructor.build_graph(plot_time)
         prediction = predict(model, graph, device, use_temporal=False)
     
-    # Get ground truth
-    ground_truth = graph.x.numpy()
+    # Get ground truth at the TARGET time (next time step)
+    target_graph = graph_constructor.build_graph(target_time)
+    ground_truth = target_graph.x.numpy()
     
     # Extract velocity and pressure
     gt_velocity = ground_truth[:, :3]

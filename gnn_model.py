@@ -65,13 +65,18 @@ class FlowGNN(nn.Module):
                 self.convs.append(LayerClass(hidden_dim, hidden_dim))
             self.batch_norms.append(nn.BatchNorm1d(hidden_dim))
         
-        # Output projection
+        # Output projection - initialize to predict small increments
         self.output_proj = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, self.output_dim)
         )
+        
+        # Initialize output layer to predict small increments initially
+        # This helps the model start by predicting small changes
+        nn.init.xavier_uniform_(self.output_proj[-1].weight, gain=0.1)
+        nn.init.zeros_(self.output_proj[-1].bias)
         
         self.dropout = dropout
     
@@ -87,6 +92,9 @@ class FlowGNN(nn.Module):
         Returns:
             Output features [num_nodes, output_dim]
         """
+        # Store input for residual connection
+        input_x = x
+        
         # Input projection
         x = self.input_proj(x)
         
@@ -105,10 +113,18 @@ class FlowGNN(nn.Module):
             if residual.shape == x.shape:
                 x = x + residual
         
-        # Output projection
-        x = self.output_proj(x)
+        # Output projection - predict increment
+        delta = self.output_proj(x)
         
-        return x
+        # Add residual connection: output = input + delta
+        # This allows the model to predict changes rather than absolute values
+        if input_x.shape == delta.shape:
+            output = input_x + delta
+        else:
+            # If dimensions don't match, just return delta (shouldn't happen)
+            output = delta
+        
+        return output
 
 
 class TemporalFlowGNN(nn.Module):
@@ -154,13 +170,17 @@ class TemporalFlowGNN(nn.Module):
             batch_first=True
         )
         
-        # Output projection
+        # Output projection - initialize to predict small increments
         self.output_proj = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, self.output_dim)
         )
+        
+        # Initialize output layer to predict small increments initially
+        nn.init.xavier_uniform_(self.output_proj[-1].weight, gain=0.1)
+        nn.init.zeros_(self.output_proj[-1].bias)
     
     def forward(self, x_seq, edge_index, batch=None):
         """
@@ -175,7 +195,6 @@ class TemporalFlowGNN(nn.Module):
             Output sequence [seq_len, num_nodes, output_dim]
         """
         seq_len, num_nodes, _ = x_seq.shape
-        outputs = []
         
         # Process each time step through spatial GNN
         spatial_features = []
@@ -195,8 +214,24 @@ class TemporalFlowGNN(nn.Module):
         # Reshape back: [seq_len, num_nodes, hidden_dim]
         lstm_out = lstm_out.transpose(0, 1)
         
-        # Output projection
-        output = self.output_proj(lstm_out)
+        # Output projection - predict increment
+        delta = self.output_proj(lstm_out)
+        
+        # Add residual connection: output = last_input + delta
+        # Predict next time step as increment from last input
+        # We only care about the last time step prediction
+        last_input = x_seq[-1]  # [num_nodes, input_dim]
+        last_delta = delta[-1]  # [num_nodes, output_dim]
+        
+        if last_input.shape == last_delta.shape:
+            # Predict next state as: current_state + delta
+            next_state = last_input + last_delta
+            # Return full sequence, but only last step has residual
+            output = delta.clone()
+            output[-1] = next_state
+        else:
+            # Fallback: just return delta (shouldn't happen)
+            output = delta
         
         return output
 

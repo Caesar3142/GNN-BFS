@@ -188,4 +188,34 @@ Prediction produces:
 - The mesh connectivity is built from `owner` and `neighbour` arrays
 - Only internal faces are used for graph edges (bidirectional)
 - Node features include velocity (3D) and pressure (1D) by default
+
+## Training Guide
+
+For detailed training instructions, see [TRAINING_GUIDE.md](TRAINING_GUIDE.md)
+
+**Quick start:**
+```bash
+source venv/bin/activate
+python train.py --data_dir BFS-OpenFOAM-data --epochs 50 --model_type temporal
+```
+
+**Recommended configuration:**
+```bash
+python train.py \
+    --data_dir BFS-OpenFOAM-data \
+    --epochs 100 \
+    --batch_size 4 \
+    --model_type temporal \
+    --sequence_length 5 \
+    --hidden_dim 128 \
+    --num_layers 4 \
+    --lr 0.0005
+```
+
+## Visualization Guide
+
+**Quick reference:**
+- **Contour plots**: `python plot_contours.py --checkpoint checkpoints/best_model.pt --data_dir BFS-OpenFOAM-data`
+- **Field comparisons**: `python plot_fields.py --checkpoint checkpoints/best_model.pt --data_dir BFS-OpenFOAM-data`
+- **All visualizations**: `python visualize.py --checkpoint checkpoints/best_model.pt --data_dir BFS-OpenFOAM-data --all`
 - Additional fields can be added by modifying the `fields` parameter in `graph_constructor.py`
