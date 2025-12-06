@@ -60,6 +60,44 @@ class OpenFOAMParser:
         
         return np.array(points)
     
+    def parse_faces(self) -> List[List[int]]:
+        """
+        Parse mesh faces (list of point indices for each face).
+        
+        Returns:
+            List of faces, where each face is a list of point indices
+        """
+        faces_file = self.mesh_dir / "faces"
+        with open(faces_file, 'r') as f:
+            content = f.read()
+        
+        # Extract number of faces
+        match = re.search(r'(\d+)\s*\(', content)
+        if not match:
+            raise ValueError("Could not find number of faces")
+        n_faces = int(match.group(1))
+        
+        # Extract face definitions
+        # Pattern: nPoints(point1 point2 ... pointN)
+        face_pattern = r'(\d+)\(([^)]+)\)'
+        matches = re.findall(face_pattern, content)
+        
+        faces = []
+        for n_points_str, points_str in matches:
+            n_points = int(n_points_str)
+            point_indices = [int(x) for x in points_str.split() if x.strip().isdigit()]
+            # OpenFOAM uses 1-based indexing, convert to 0-based
+            point_indices = [idx - 1 for idx in point_indices]
+            if len(point_indices) == n_points:
+                faces.append(point_indices)
+            else:
+                # Handle case where points might be on multiple lines
+                # Try to get all points
+                if len(point_indices) > 0:
+                    faces.append(point_indices[:n_points] if len(point_indices) >= n_points else point_indices)
+        
+        return faces
+    
     def parse_connectivity(self) -> Tuple[np.ndarray, np.ndarray]:
         """
         Parse mesh connectivity (owner and neighbour arrays).
@@ -93,6 +131,60 @@ class OpenFOAMParser:
         neighbour = np.array([int(x) for x in neighbour_str.split() if x.strip().isdigit()])
         
         return owner, neighbour
+    
+    def compute_cell_centers(self) -> np.ndarray:
+        """
+        Compute cell centers from mesh geometry.
+        For each cell, collect all points from faces belonging to that cell
+        and compute the centroid.
+        """
+        points = self.parse_points()
+        owner, neighbour = self.parse_connectivity()
+        faces = self.parse_faces()
+        
+        n_cells = max(owner.max(), neighbour.max()) + 1
+        cell_centers = np.zeros((n_cells, 3))
+        
+        # For each cell, collect all points from its faces
+        cell_points = [[] for _ in range(n_cells)]
+        
+        # Process internal faces (have both owner and neighbour)
+        for i in range(len(neighbour)):
+            face_idx = i
+            owner_cell = owner[face_idx]
+            neighbour_cell = neighbour[i]
+            
+            # Add face points to both owner and neighbour cells
+            if face_idx < len(faces):
+                face_point_indices = faces[face_idx]
+                for point_idx in face_point_indices:
+                    if point_idx < len(points):
+                        cell_points[owner_cell].append(points[point_idx])
+                        cell_points[neighbour_cell].append(points[point_idx])
+        
+        # Process boundary faces (only have owner)
+        n_internal = len(neighbour)
+        for i in range(n_internal, len(owner)):
+            face_idx = i
+            owner_cell = owner[face_idx]
+            
+            if face_idx < len(faces):
+                face_point_indices = faces[face_idx]
+                for point_idx in face_point_indices:
+                    if point_idx < len(points):
+                        cell_points[owner_cell].append(points[point_idx])
+        
+        # Compute cell centers as centroids of collected points
+        for cell_idx in range(n_cells):
+            if len(cell_points[cell_idx]) > 0:
+                # Remove duplicates and compute centroid
+                unique_points = np.unique(np.array(cell_points[cell_idx]), axis=0)
+                cell_centers[cell_idx] = np.mean(unique_points, axis=0)
+            else:
+                # Fallback: use zero (shouldn't happen)
+                cell_centers[cell_idx] = np.array([0.0, 0.0, 0.0])
+        
+        return cell_centers
     
     def parse_vector_field(self, time_dir: str, field_name: str) -> np.ndarray:
         """

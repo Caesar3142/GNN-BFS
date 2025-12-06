@@ -16,13 +16,13 @@ from gnn_model import FlowGNN, TemporalFlowGNN
 
 def load_model(checkpoint_path, device):
     """Load trained model from checkpoint."""
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     args = checkpoint['args']
     
     # Determine input/output dimensions from checkpoint or args
     # For now, we'll need to infer from data
-    input_dim = args.get('input_dim', 4)  # Default: velocity (3) + pressure (1)
-    output_dim = args.get('output_dim', input_dim)
+    input_dim = getattr(args, 'input_dim', 4)  # Default: velocity (3) + pressure (1)
+    output_dim = getattr(args, 'output_dim', input_dim)
     
     # Create model
     if args.model_type == 'temporal':
@@ -40,7 +40,7 @@ def load_model(checkpoint_path, device):
             output_dim=output_dim,
             num_layers=args.num_layers,
             dropout=0.1,
-            layer_type=args.get('layer_type', 'GCN')
+            layer_type=getattr(args, 'layer_type', 'GCN')
         )
     
     model.load_state_dict(checkpoint['model_state_dict'])

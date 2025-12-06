@@ -95,6 +95,64 @@ Arguments:
 - `--output_dir`: Directory to save predictions (default: predictions)
 - `--visualize`: Create visualization plots
 
+### Visualization
+
+#### Contour Plots (Pressure & Velocity in X-Y Coordinates)
+
+To plot contour plots showing spatial distribution of pressure and velocity fields:
+
+```bash
+python plot_contours.py --checkpoint checkpoints/best_model.pt --data_dir BFS-OpenFOAM-data
+```
+
+This creates:
+- **Pressure contours**: Side-by-side comparison of OpenFOAM pressure, model prediction, and error
+- **Velocity contours**: Side-by-side comparison of OpenFOAM velocity magnitude, model prediction, and error
+- All plots show spatial distribution in x-y coordinates with contour lines
+
+Options:
+- `--time_dir`: Specific time directory to plot (default: validation time step)
+- `--output_dir`: Directory to save plots (default: contour_plots)
+- `--levels`: Number of contour levels (default: 30)
+
+#### Field Comparison Plots (Pressure & Velocity)
+
+To plot pressure and velocity from both OpenFOAM data and trained model results with error analysis:
+
+```bash
+python plot_fields.py --checkpoint checkpoints/best_model.pt --data_dir BFS-OpenFOAM-data
+```
+
+This creates:
+- **Pressure comparison**: Scatter plots, error distributions, R² scores for pressure
+- **Velocity comparison**: Velocity magnitude and component-wise (Ux, Uy, Uz) analysis
+- **Error summary**: Comprehensive error statistics and comparisons
+
+Options:
+- `--time_dir`: Specific time directory to plot (default: validation time step)
+- `--output_dir`: Directory to save plots (default: field_plots)
+
+#### Advanced Visualizations
+
+For comprehensive visualizations with multiple plot types:
+
+```bash
+python visualize.py --checkpoint checkpoints/best_model.pt --data_dir BFS-OpenFOAM-data --all
+```
+
+This creates:
+- **Field comparison plots**: Scatter plots, error distributions, R² scores
+- **Component-wise plots**: Separate analysis for Ux, Uy, Uz components
+- **Vector field plots**: 2D velocity field visualizations with quiver plots
+
+Options:
+- `--all`: Create all visualization types
+- `--visualize_field`: Create field comparison plots
+- `--visualize_components`: Create component-wise plots
+- `--visualize_vectors`: Create vector field plots
+- `--time_dir`: Specific time directory to visualize
+- `--output_dir`: Directory to save visualizations (default: visualizations)
+
 ## Model Architecture
 
 ### Static FlowGNN
