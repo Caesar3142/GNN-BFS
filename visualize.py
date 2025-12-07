@@ -9,8 +9,9 @@ from pathlib import Path
 import argparse
 
 from openfoam_parser import OpenFOAMParser
-from graph_constructor import GraphConstructor
-from gnn_model import FlowGNN, TemporalFlowGNN
+from graph_constructor_method import GraphConstructorMethod
+from gnn_model_method import FlowGNNMethod, TemporalFlowGNNMethod
+from normalization import normalize_graph_features
 
 
 def load_model(checkpoint_path, device):
@@ -18,52 +19,58 @@ def load_model(checkpoint_path, device):
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     args = checkpoint['args']
     
-    input_dim = getattr(args, 'input_dim', 4)
-    output_dim = getattr(args, 'output_dim', input_dim)
+    input_dim = 24  # 4 fields * 6 time steps
+    output_dim = 4  # 4 fields: [c, p, u, v]
     
     model_type = getattr(args, 'model_type', 'static')
     if model_type == 'temporal':
-        model = TemporalFlowGNN(
+        model = TemporalFlowGNNMethod(
             input_dim=input_dim,
             hidden_dim=getattr(args, 'hidden_dim', 64),
             output_dim=output_dim,
-            num_layers=getattr(args, 'num_layers', 3),
+            num_layers=getattr(args, 'num_layers', 4),
             dropout=0.1
         )
     else:
-        model = FlowGNN(
+        model = FlowGNNMethod(
             input_dim=input_dim,
             hidden_dim=getattr(args, 'hidden_dim', 64),
             output_dim=output_dim,
-            num_layers=getattr(args, 'num_layers', 3),
-            dropout=0.1,
-            layer_type=getattr(args, 'layer_type', 'GCN')
+            num_layers=getattr(args, 'num_layers', 4),
+            dropout=0.1
         )
     
     model.load_state_dict(checkpoint['model_state_dict'])
     model = model.to(device)
     model.eval()
     
-    return model, args
+    normalizer = checkpoint.get('normalizer', None)
+    
+    return model, args, normalizer
 
 
-def predict(model, graph, device, use_temporal=False, input_sequence=None):
-    """Make prediction for a single graph."""
+def predict(model, graph, device, normalizer=None):
+    """Make prediction for a single graph (method-based)."""
     model.eval()
     
     with torch.no_grad():
-        if use_temporal and input_sequence is not None:
-            x_seq = torch.stack([g.x for g in input_sequence], dim=0)
-            x_seq = x_seq.to(device)
-            edge_index = input_sequence[0].edge_index.to(device)
-            outputs = model(x_seq, edge_index)
-            pred = outputs[-1]
+        # Normalize if normalizer available
+        if normalizer is not None:
+            x_norm = normalizer.transform(graph.x.numpy())
+            x = torch.tensor(x_norm, dtype=torch.float32).to(device)
         else:
             x = graph.x.to(device)
-            edge_index = graph.edge_index.to(device)
-            pred = model(x, edge_index)
+        
+        edge_index = graph.edge_index.to(device)
+        pred = model(x, edge_index)
+        
+        # Denormalize if normalizer available
+        if normalizer is not None:
+            pred = normalizer.inverse_transform(pred.cpu().numpy())
+        else:
+            pred = pred.cpu().numpy()
     
-    return pred.cpu().numpy()
+    return pred
 
 
 def visualize_field_comparison(ground_truth, prediction, save_path=None, field_name="Velocity"):
@@ -283,14 +290,16 @@ def main():
     
     # Load model
     print("Loading model...")
-    model, model_args = load_model(args.checkpoint, device)
+    model, model_args, normalizer = load_model(args.checkpoint, device)
     model_type = getattr(model_args, 'model_type', 'static')
     print(f"Model loaded: {model_type}")
+    if normalizer is not None:
+        print("Normalizer found in checkpoint - will denormalize predictions")
     
     # Load data
     print("Loading OpenFOAM data...")
     of_parser = OpenFOAMParser(args.data_dir)
-    graph_constructor = GraphConstructor(of_parser)
+    graph_constructor = GraphConstructorMethod(of_parser)
     
     # Get time directories
     time_dirs = of_parser.get_time_directories()
@@ -306,29 +315,57 @@ def main():
     
     print(f"Visualizing for time: {predict_time}")
     
-    # Build graph for prediction
-    graph = graph_constructor.build_graph(predict_time)
+    # Method-based: Need 6 previous time steps for input
+    time_idx = time_dirs.index(predict_time)
     
-    # For temporal models, need input sequence
-    model_type = getattr(model_args, 'model_type', 'static')
-    if model_type == 'temporal':
-        seq_len = getattr(model_args, 'sequence_length', 3)
-        time_idx = time_dirs.index(predict_time)
-        
-        if time_idx < seq_len:
-            input_sequence = [graph_constructor.build_graph(time_dirs[i]) 
-                            for i in range(max(0, time_idx - seq_len + 1), time_idx + 1)]
-        else:
-            input_sequence = [graph_constructor.build_graph(time_dirs[i]) 
-                            for i in range(time_idx - seq_len + 1, time_idx + 1)]
-        
-        prediction = predict(model, graph, device, use_temporal=True, 
-                           input_sequence=input_sequence)
+    if time_idx < 6:
+        raise ValueError(f"Need at least 6 previous time steps. Only {time_idx} available before {predict_time}")
+    
+    # Build input sequence (6 time steps)
+    from normalization import normalize_graph_features
+    input_sequence = []
+    for i in range(time_idx - 6, time_idx):
+        graph = graph_constructor.build_graph(
+            time_dirs[i],
+            adaptive_sampling=getattr(model_args, 'adaptive_sampling', False),
+            include_concentration=getattr(model_args, 'include_concentration', False)
+        )
+        # Normalize if normalizer available
+        if normalizer is not None:
+            graph_list, _ = normalize_graph_features([graph], normalizer=normalizer, fit=False)
+            graph = graph_list[0]
+        input_sequence.append(graph)
+    
+    # Flatten sequence: [c, p, u, v]_(t-6:t-1) -> [num_nodes, 24]
+    flattened_features = torch.cat([g.x for g in input_sequence], dim=1)
+    input_graph = type(input_sequence[0])(
+        x=flattened_features,
+        edge_index=input_sequence[0].edge_index,
+        num_nodes=input_sequence[0].num_nodes
+    )
+    
+    # Make prediction
+    print("Making prediction...")
+    prediction = predict(model, input_graph, device, normalizer)
+    
+    # Get ground truth (next time step)
+    target_time_idx = time_idx + 1
+    if target_time_idx < len(time_dirs):
+        target_time = time_dirs[target_time_idx]
+        target_graph = graph_constructor.build_graph(
+            target_time,
+            adaptive_sampling=getattr(model_args, 'adaptive_sampling', False),
+            include_concentration=getattr(model_args, 'include_concentration', False)
+        )
+        ground_truth = target_graph.x.numpy()
     else:
-        prediction = predict(model, graph, device, use_temporal=False)
-    
-    # Get ground truth (next time step if available)
-    ground_truth = graph.x.numpy()
+        print("Warning: No next time step, using current")
+        target_graph = graph_constructor.build_graph(
+            predict_time,
+            adaptive_sampling=getattr(model_args, 'adaptive_sampling', False),
+            include_concentration=getattr(model_args, 'include_concentration', False)
+        )
+        ground_truth = target_graph.x.numpy()
     
     # Compute metrics
     mse = np.mean((prediction - ground_truth) ** 2)

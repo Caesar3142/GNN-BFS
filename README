@@ -1,19 +1,30 @@
 # GNN-BFS: Graph Neural Network for OpenFOAM Flow Simulation
 
-This project implements a Graph Neural Network (GNN) for training on OpenFOAM flow simulation data, specifically for Backward-Facing Step (BFS) flow cases.
-
-**Latest Update**: Model architecture has been improved with residual connections to ensure predictions maintain correct scale. If you have an old checkpoint, please retrain the model (see [IMPORTANT_RETRAIN.md](IMPORTANT_RETRAIN.md)).
+This project implements a Graph Neural Network (GNN) for training on OpenFOAM flow simulation data, specifically for Backward-Facing Step (BFS) flow cases. The implementation strictly follows the method specification with fixed 6-time-step input, exact GAT formula, multi-head attention, and residual connections.
 
 ## Overview
 
 The project provides:
 - **OpenFOAM Data Parser**: Extracts mesh connectivity and field data from OpenFOAM case directories
-- **Graph Construction**: Builds PyTorch Geometric graphs from mesh topology
+- **Graph Construction**: Builds graphs from mesh topology with adaptive spatial sampling
 - **GNN Models**: 
   - Static GNN for single time-step prediction
-  - Temporal GNN with LSTM for sequence-to-sequence prediction
+  - Temporal GNN for sequence-to-sequence prediction
 - **Training Pipeline**: Complete training script with validation and checkpointing
 - **Inference Script**: Make predictions with trained models
+- **Visualization Tools**: Contour plots, field comparisons, and error analysis
+
+## Method Specification
+
+This implementation follows the exact method specification:
+- **Input**: 6 previous time steps flattened per node: `x_i^(t-1:t-6) = [c_i, p_i, u_i, v_i]_(t-1:t-6)` → 24 features
+- **Output**: Next time step: `y_i^t = [c_i, p_i, u_i, v_i]_t` → 4 features
+- **GAT Formula**: Exact attention mechanism with Q, K, V projections
+- **Multi-Head Attention**: 4 heads with K and Q dimension = 1
+- **Residual Connections**: Between layers for stable deep training
+- **Loss Function**: MSE (`L = ||y_pred - y_CFD||_2^2`)
+
+For detailed method equations and theory, see [METHOD_SUMMARY.md](METHOD_SUMMARY.md).
 
 ## Installation
 
@@ -32,7 +43,7 @@ pip install -r requirements.txt
 
 Note: If you encounter "externally-managed-environment" error, use a virtual environment as shown above. If `pip` is not found, use `pip3` or `python3 -m pip`.
 
-2. Ensure you have OpenFOAM data in the `BFS-OpenFOAM-data/` directory with the following structure:
+3. Ensure you have OpenFOAM data in the `BFS-OpenFOAM-data/` directory with the following structure:
 ```
 BFS-OpenFOAM-data/
 ├── constant/
@@ -58,25 +69,27 @@ source venv/bin/activate  # On macOS/Linux
 
 Train a static GNN model:
 ```bash
-python train.py --data_dir BFS-OpenFOAM-data --epochs 50 --batch_size 4 --model_type static
+python train_method.py --data_dir BFS-OpenFOAM-data --epochs 50 --batch_size 4 --model_type static
 ```
 
 Train a temporal GNN model (recommended for time-series prediction):
 ```bash
-python train.py --data_dir BFS-OpenFOAM-data --epochs 50 --batch_size 4 --model_type temporal --sequence_length 3
+python train_method.py --data_dir BFS-OpenFOAM-data --epochs 50 --batch_size 4 --model_type temporal
 ```
 
-**Recommended configuration for better results:**
+**Recommended configuration:**
 ```bash
-python train.py \
+python train_method.py \
     --data_dir BFS-OpenFOAM-data \
     --epochs 100 \
     --batch_size 4 \
     --model_type temporal \
-    --sequence_length 5 \
-    --hidden_dim 128 \
+    --hidden_dim 64 \
     --num_layers 4 \
-    --lr 0.0005
+    --lr 0.001 \
+    --adaptive_sampling \
+    --normalize \
+    --normalize_per_field
 ```
 
 Key arguments:
@@ -84,17 +97,16 @@ Key arguments:
 - `--epochs`: Number of training epochs
 - `--batch_size`: Batch size for training
 - `--model_type`: `static` or `temporal`
-- `--sequence_length`: Input sequence length for temporal model (default: 3, use 6 for enhanced model)
 - `--hidden_dim`: Hidden dimension (default: 64)
-- `--num_layers`: Number of GNN layers (default: 3)
-- `--layer_type`: GNN layer type: `GCN`, `GAT`, `GIN`, or `attention` (default: GCN)
+- `--num_layers`: Number of GNN layers (default: 4)
 - `--lr`: Learning rate (default: 0.001)
 - `--train_split`: Train/validation split ratio (default: 0.8)
 - `--adaptive_sampling`: Use adaptive spatial sampling for graph edges (improves gradient capture)
 - `--sampling_radius`: Radius for adaptive sampling (default: auto-computed)
-- `--include_coordinates`: Embed cell center coordinates in node features
-- `--use_enhanced_model`: Use enhanced model with custom attention architecture
-- `--use_flattened_input`: Use flattened sequence input (cylinder project method)
+- `--normalize`: Enable feature normalization
+- `--normalize_per_field`: Normalize each field separately (recommended)
+
+**Note:** The method-based implementation uses a fixed 6-time-step input sequence. The model automatically handles sequence flattening.
 
 ### Prediction
 
@@ -105,15 +117,15 @@ source venv/bin/activate  # On macOS/Linux
 
 Make predictions with a trained model:
 ```bash
-python predict.py --checkpoint checkpoints/best_model.pt --data_dir BFS-OpenFOAM-data --visualize
+python predict_method.py --checkpoint checkpoints_method/best_model.pt --data_dir BFS-OpenFOAM-data
 ```
 
 Arguments:
 - `--checkpoint`: Path to model checkpoint
 - `--data_dir`: Path to OpenFOAM data directory
 - `--time_dir`: Specific time directory to predict (optional)
-- `--output_dir`: Directory to save predictions (default: predictions)
-- `--visualize`: Create visualization plots
+- `--output_dir`: Directory to save predictions (default: predictions_method)
+- `--include_concentration`: Include concentration field if available
 
 ### Visualization
 
@@ -122,32 +134,34 @@ Arguments:
 To plot contour plots showing spatial distribution of pressure and velocity fields:
 
 ```bash
-python plot_contours.py --checkpoint checkpoints/best_model.pt --data_dir BFS-OpenFOAM-data
+python plot_contours.py --checkpoint checkpoints_method/best_model.pt --data_dir BFS-OpenFOAM-data
 ```
 
 This creates:
-- **Pressure contours**: Vertically stacked comparison of OpenFOAM pressure, model prediction, and error
-- **Velocity contours**: Vertically stacked comparison of OpenFOAM velocity magnitude, model prediction, and error
+- **Pressure contours**: Vertically stacked comparison of OpenFOAM pressure, model prediction, and percentage error
+- **Velocity contours**: Vertically stacked comparison of OpenFOAM velocity magnitude, model prediction, and percentage error
 - All plots show spatial distribution in x-y coordinates with contour lines
 - **Domain masking**: Uses Delaunay triangulation to preserve sharp boundaries and square corners
 - **Same colorbar scale**: OpenFOAM and prediction use identical scales for direct comparison
+- **Error in percentage**: Error plots show percentage error for better interpretability
 
 Options:
 - `--time_dir`: Specific time directory to plot (default: validation time step)
 - `--output_dir`: Directory to save plots (default: contour_plots)
 - `--levels`: Number of contour levels (default: 30)
+- `--include_concentration`: Include concentration field if available
 
 #### Field Comparison Plots (Pressure & Velocity)
 
 To plot pressure and velocity from both OpenFOAM data and trained model results with error analysis:
 
 ```bash
-python plot_fields.py --checkpoint checkpoints/best_model.pt --data_dir BFS-OpenFOAM-data
+python plot_fields.py --checkpoint checkpoints_method/best_model.pt --data_dir BFS-OpenFOAM-data
 ```
 
 This creates:
 - **Pressure comparison**: Scatter plots, error distributions, R² scores for pressure
-- **Velocity comparison**: Velocity magnitude and component-wise (Ux, Uy, Uz) analysis
+- **Velocity comparison**: Velocity magnitude and component-wise (u, v) analysis
 - **Error summary**: Comprehensive error statistics and comparisons
 
 Options:
@@ -159,12 +173,12 @@ Options:
 For comprehensive visualizations with multiple plot types:
 
 ```bash
-python visualize.py --checkpoint checkpoints/best_model.pt --data_dir BFS-OpenFOAM-data --all
+python visualize.py --checkpoint checkpoints_method/best_model.pt --data_dir BFS-OpenFOAM-data --all
 ```
 
 This creates:
 - **Field comparison plots**: Scatter plots, error distributions, R² scores
-- **Component-wise plots**: Separate analysis for Ux, Uy, Uz components
+- **Component-wise plots**: Separate analysis for u, v components
 - **Vector field plots**: 2D velocity field visualizations with quiver plots
 
 Options:
@@ -177,31 +191,25 @@ Options:
 
 ## Model Architecture
 
-### Static FlowGNN
-- Input: Node features (velocity, pressure, etc.)
-- Architecture: Multi-layer GCN/GAT/GIN with residual connections
-- Output: Predicted field values at next time step
-- **Key Feature**: Uses residual connections to predict increments (delta) from input, preserving scale
+### Method-Based FlowGNN
 
-### Temporal FlowGNN
-- Input: Sequence of node features
-- Architecture: Spatial GNN + Temporal LSTM
-- Output: Predicted field sequence
-- **Key Feature**: Predicts increments (delta) from last input state: `output = input + delta`
-- This ensures predictions maintain the correct scale (pressure ~15-375, velocity ~0-17)
+The implementation strictly follows the method specification:
 
-### Architecture Details
+- **Input**: 24 features (6 time steps × 4 fields: [c, p, u, v])
+- **Architecture**: 
+  - Alternating single-head and multi-head GAT layers
+  - Multi-head attention with 4 heads (K and Q dimension = 1)
+  - Residual connections between layers
+  - LeakyReLU activation
+- **Output**: 4 features ([c, p, u, v]) for next time step
+- **Loss**: MSE (`L = ||y_pred - y_CFD||_2^2`)
+- **Evaluation**: L2 relative error (`||φ_pred - φ_true||_2 / ||φ_true||_2`)
 
-Both models use:
-- **Residual connections**: Predict changes rather than absolute values
-- **Scale preservation**: Outputs maintain input scale automatically
-- **Proper initialization**: Output layers initialized to predict small increments initially
+### Adaptive Spatial Sampling
 
-### Adaptive Spatial Sampling (Advanced)
+The graph construction supports **adaptive spatial sampling**:
 
-The graph construction supports **adaptive spatial sampling** inspired by multi-scale gradient aggregation methods:
-
-- **Formula**: `ne[i] = {j | (x_j - x_i)² + (y_j - y_i)² < r²}`
+- **Formula**: `ne(i) = { j | (x_i − x_j)² + (y_i − y_j)² ≤ r }`
 - **Purpose**: Captures multi-scale gradient information, especially in regions with large gradient changes (near walls, obstacles)
 - **Benefits**: 
   - Prevents jitter in flow fields with large gradient changes
@@ -210,106 +218,107 @@ The graph construction supports **adaptive spatial sampling** inspired by multi-
 
 **Usage:**
 ```bash
-python train.py --data_dir BFS-OpenFOAM-data --epochs 50 --adaptive_sampling
+python train_method.py --data_dir BFS-OpenFOAM-data --epochs 50 --adaptive_sampling
 ```
 
 Or with custom radius:
 ```bash
-python train.py --data_dir BFS-OpenFOAM-data --epochs 50 --adaptive_sampling --sampling_radius 0.002
+python train_method.py --data_dir BFS-OpenFOAM-data --epochs 50 --adaptive_sampling --sampling_radius 0.002
 ```
-
-### Enhanced Model with Custom Attention Architecture
-
-The project includes an **enhanced model** based on cylinder project methodology with custom attention mechanisms:
-
-- **Single-headed attention**: Aggregated query from neighbors, key from current node
-- **Multi-headed attention**: 4 heads with K and Q dimension = 1
-- **Residual connections**: Between attention layers and every 2 layers
-- **Flattened sequence input**: `x_i = [u_i[t1:t6], v_i[t1:t6], p_i[t1:t6], ...]`
-- **Explicit neighbor aggregation**: `sum(x_j for j in neighbors[i])`
-
-**Usage:**
-```bash
-python train.py \
-    --data_dir BFS-OpenFOAM-data \
-    --epochs 100 \
-    --model_type temporal \
-    --sequence_length 6 \
-    --use_enhanced_model \
-    --use_flattened_input \
-    --include_coordinates \
-    --adaptive_sampling \
-    --layer_type attention
-```
-
-See [ATTENTION_ARCHITECTURE.md](ATTENTION_ARCHITECTURE.md) for detailed architecture documentation.
-
-For detailed theoretical background and methodology, see [METHODOLOGY.md](METHODOLOGY.md).
 
 ## Data Format
 
 The parser expects OpenFOAM field files with:
-- Vector fields (e.g., `U`): 3D velocity vectors
-- Scalar fields (e.g., `p`): Pressure values
+- **Concentration** (optional): Scalar field `c` or `s`
+- **Pressure**: Scalar field `p`
+- **Velocity**: Vector field `U` (extracts u and v components)
 
-Each time directory should contain field files with `internalField` data.
+Each time directory should contain field files with `internalField` data. The method uses 6 consecutive time steps as input to predict the next time step.
 
 ## Output
 
 Training produces:
-- Model checkpoints in `checkpoints/` directory
+- Model checkpoints in `checkpoints_method/` directory
 - Training curves plot (`training_curves.png`)
+- L2 relative error metrics
 
 Prediction produces:
 - NumPy arrays with predictions and ground truth
-- Visualization plots (if `--visualize` is used)
+- L2 relative error computation
+
+Visualization produces:
+- Contour plots in `contour_plots/` directory
+- Field comparison plots in `field_plots/` directory
+- Advanced visualizations in `visualizations/` directory
+
+## Technical Details
+
+- **Mesh connectivity**: Built from `owner` and `neighbour` arrays
+- **Graph edges**: Internal faces create bidirectional edges, or adaptive spatial sampling
+- **Node features**: [c, p, u, v] where c=concentration, p=pressure, u=x-velocity, v=y-velocity
+- **Input sequence**: Fixed 6 time steps, flattened to 24 features per node
+- **Cell centers**: Computed accurately from mesh geometry (faces and points)
+- **Prediction**: Model predicts the next time step (t+1) from 6 previous time steps (t-6 to t-1)
+- **Domain masking**: Contour plots use Delaunay triangulation to preserve sharp boundaries
+- **GAT attention**: Exact formula with Q, K, V projections and LeakyReLU activation
+- **Multi-head attention**: 4 heads with dimension 1 for K and Q
+
+## Quick Start
+
+**Training:**
+```bash
+source venv/bin/activate
+python train_method.py --data_dir BFS-OpenFOAM-data --epochs 100 --model_type temporal --normalize --normalize_per_field --adaptive_sampling
+```
+
+**Visualization:**
+```bash
+# Contour plots (pressure & velocity)
+python plot_contours.py --checkpoint checkpoints_method/best_model.pt --data_dir BFS-OpenFOAM-data
+
+# Field comparison
+python plot_fields.py --checkpoint checkpoints_method/best_model.pt --data_dir BFS-OpenFOAM-data
+```
+
+**Update Visualization (After Retraining):**
+```bash
+# Simply run plot_contours.py again with the new checkpoint
+python plot_contours.py --checkpoint checkpoints_method/best_model.pt --data_dir BFS-OpenFOAM-data --time_dir 0.096
+```
+
+For detailed instructions, see [QUICK_START.md](QUICK_START.md).
+
+## Documentation
+
+- [METHOD_SUMMARY.md](METHOD_SUMMARY.md) - Complete method and equation summary
+- [QUICK_START.md](QUICK_START.md) - Quick reference for training and visualization
+- [README_METHOD.md](README_METHOD.md) - Detailed method-based implementation guide
+
+## File Structure
+
+```
+GNN-BFS/
+├── train_method.py              # Training script (method-based)
+├── predict_method.py            # Prediction script (method-based)
+├── gnn_model_method.py          # GNN model (method-based)
+├── graph_constructor_method.py  # Graph construction (method-based)
+├── attention_method.py          # Attention layers (method-based)
+├── dataset_method.py            # Dataset (method-based)
+├── plot_contours.py             # Contour plot visualization
+├── plot_fields.py               # Field comparison visualization
+├── visualize.py                 # Advanced visualization
+├── openfoam_parser.py           # OpenFOAM data parser
+├── normalization.py             # Feature normalization
+├── requirements.txt             # Python dependencies
+├── README                       # This file
+├── METHOD_SUMMARY.md            # Method specification
+├── QUICK_START.md               # Quick start guide
+└── README_METHOD.md             # Method implementation details
+```
 
 ## Important Notes
 
-### Model Architecture Update
-
-⚠️ **If you have an old checkpoint**, you need to retrain the model because the architecture was updated to fix scaling issues. The model now uses residual connections to predict increments, ensuring predictions maintain the correct scale.
-
-See [IMPORTANT_RETRAIN.md](IMPORTANT_RETRAIN.md) for details.
-
-### Technical Details
-
-- **Mesh connectivity**: Built from `owner` and `neighbour` arrays
-- **Graph edges**: Internal faces create bidirectional edges
-- **Node features**: Velocity (3D) and pressure (1D) by default
-- **Cell centers**: Computed accurately from mesh geometry (faces and points) using unique vertices
-- **Prediction**: Model predicts the next time step (t+1) from input sequence ending at time t
-- **Domain masking**: Contour plots use Delaunay triangulation to preserve sharp boundaries
-- **Coordinate embedding**: Optional cell center coordinates can be embedded in features
-- **Attention mechanism**: Custom attention with aggregated query from neighbors (see [ATTENTION_ARCHITECTURE.md](ATTENTION_ARCHITECTURE.md))
-
-## Training Guide
-
-For detailed training instructions, see [TRAINING_GUIDE.md](TRAINING_GUIDE.md)
-
-**Quick start:**
-```bash
-source venv/bin/activate
-python train.py --data_dir BFS-OpenFOAM-data --epochs 50 --model_type temporal
-```
-
-**Recommended configuration:**
-```bash
-python train.py \
-    --data_dir BFS-OpenFOAM-data \
-    --epochs 100 \
-    --batch_size 4 \
-    --model_type temporal \
-    --sequence_length 5 \
-    --hidden_dim 128 \
-    --num_layers 4 \
-    --lr 0.0005
-```
-
-## Visualization Guide
-
-**Quick reference:**
-- **Contour plots**: `python plot_contours.py --checkpoint checkpoints/best_model.pt --data_dir BFS-OpenFOAM-data`
-- **Field comparisons**: `python plot_fields.py --checkpoint checkpoints/best_model.pt --data_dir BFS-OpenFOAM-data`
-- **All visualizations**: `python visualize.py --checkpoint checkpoints/best_model.pt --data_dir BFS-OpenFOAM-data --all`
-- Additional fields can be added by modifying the `fields` parameter in `graph_constructor.py`
+- **Fixed input sequence**: The method uses exactly 6 previous time steps. Ensure your data has at least 7 time directories (6 for input + 1 for target).
+- **Feature order**: Features are always [c, p, u, v]. If concentration is not available, it defaults to zeros.
+- **Checkpoint location**: Method-based models save to `checkpoints_method/` directory.
+- **Normalization**: Recommended to use `--normalize --normalize_per_field` for better training stability.
